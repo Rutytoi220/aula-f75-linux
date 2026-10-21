@@ -1,0 +1,123 @@
+# Builds a prebuilt Linux release: an AppImage and a plain tarball.
+# Built on Ubuntu 22.04 (glibc 2.35) so one binary runs on Linux Mint 21/22,
+# LMDE 6, Ubuntu 22.04+, Debian 12+ and newer distros.
+# No workflow artifacts or caches are used; files go straight to a GitHub Release.
+name: Release build
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - ci/release-build
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build, test and publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pick release name
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; else tag=build-test; fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "release name: $tag"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libudev-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libpulse-dev
+
+      - name: Update Rust (1.95 or newer needed)
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc --version
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package tarball and AppImage
+        run: |
+          set -euo pipefail
+          bin=target/release/f75-studio
+          strip "$bin"
+          echo "newest glibc symbol needed:"
+          objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+
+          # Plain tarball
+          name="f75-studio-$TAG-x86_64-linux"
+          mkdir -p "dist/$name"
+          cp "$bin" packaging/70-aula-f75.rules packaging/f75-studio.desktop "dist/$name/"
+          cp assets/icon.png "dist/$name/f75-studio.png"
+          printf '%s\n' \
+            'F75 Studio prebuilt for x86_64 Linux (glibc 2.35 or newer).' \
+            '' \
+            'Run ./f75-studio. On first start, use the keyboard access button in the' \
+            'app (or run ./f75-studio fix-permissions) to install the udev rule; it asks' \
+            'for your password once.' \
+            '' \
+            'Needs libpulse0 and libudev1, which desktop installs already have.' \
+            > "dist/$name/README.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+          # AppImage
+          app=dist/AppDir
+          mkdir -p "$app/usr/bin"
+          cp "$bin" "$app/usr/bin/"
+          cp packaging/f75-studio.desktop "$app/"
+          cp assets/icon.png "$app/f75-studio.png"
+          ln -s usr/bin/f75-studio "$app/AppRun"
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$app" "dist/F75_Studio-$TAG-x86_64.AppImage"
+
+          cd dist
+          sha256sum ./*.tar.gz ./*.AppImage > SHA256SUMS
+          cat SHA256SUMS
+          ls -la
+
+      - name: Test on clean Ubuntu 24.04 (Mint 22 base), Ubuntu 22.04 (Mint 21 base) and Debian 12 (LMDE 6 base)
+        run: |
+          set -euo pipefail
+          for img in ubuntu:24.04 ubuntu:22.04 debian:12; do
+            echo "=== $img"
+            docker run --rm -v "$PWD/dist:/dist:ro" "$img" bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libpulse0 libudev1 >/dev/null
+              cd /tmp
+              tar -xzf /dist/f75-studio-*-x86_64-linux.tar.gz
+              out=$(./f75-studio-*/f75-studio quit 2>&1); echo "tarball: $out"
+              grep -q "isn.t running" <<<"$out"
+              cp /dist/F75_Studio-*-x86_64.AppImage ./app.AppImage
+              out=$(./app.AppImage --appimage-extract-and-run quit 2>&1); echo "AppImage: $out"
+              grep -q "isn.t running" <<<"$out"
+            '
+          done
+
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          files="dist/F75_Studio-$TAG-x86_64.AppImage dist/f75-studio-$TAG-x86_64-linux.tar.gz dist/SHA256SUMS"
+          if [ "$TAG" = build-test ]; then
+            # Test builds replace a private draft release; nothing public.
+            gh release delete build-test --yes --cleanup-tag 2>/dev/null || true
+            gh release create build-test $files --draft --prerelease --target "$GITHUB_SHA" \
+              --title "Build test" --notes "Test build from $GITHUB_SHA."
+          elif gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $files --clobber
+          else
+            gh release create "$TAG" $files --title "F75 Studio $TAG" --notes-file packaging/release-notes.md
+          fi

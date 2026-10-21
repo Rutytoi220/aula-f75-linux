@@ -14,6 +14,20 @@ and [tools/ghidra](tools/ghidra).
 |---|---|---|
 | ![3D](docs/3d.png) | ![Keys](docs/keys.png) | ![Audio](docs/audio.png) |
 
+## Prebuilt download
+
+No build tools needed. Grab the AppImage (or the tarball) from the
+[latest release](https://github.com/trenbolone1122/aula-f75-linux/releases/latest).
+It runs on Linux Mint 21/22, LMDE 6, Ubuntu 22.04+, Debian 12+ and similar x86_64 distros.
+
+```bash
+chmod +x F75_Studio-*-x86_64.AppImage
+./F75_Studio-*-x86_64.AppImage
+```
+
+On first start, use the keyboard access button in the app to install the udev rule
+(one password prompt). If the AppImage does not start, run it with `--appimage-extract-and-run`.
+
 ## Build and run
 
 ### Fedora, Debian / Ubuntu, Arch (one command)
