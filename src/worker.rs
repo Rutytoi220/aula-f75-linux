@@ -295,13 +295,11 @@ impl Worker {
                 }
                 self.send_keymap(layer);
             }
-            if wired {
-                if !pr.macros.is_empty() {
-                    self.ensure()?.set_macros(&macro_buffer(&pr.macros))?;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let _ = self.ensure()?.commit();
+            if wired && !pr.macros.is_empty() {
+                self.ensure()?.set_macros(&macro_buffer(&pr.macros))?;
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let _ = self.ensure()?.commit();
         }
         Ok(())
     }
@@ -325,9 +323,11 @@ impl Worker {
                 // radio traffic can swallow key releases on 2.4G (auto-repeat), so ask rarely
                 let fresh = self.kb.is_none();
                 let due = self.last_online.elapsed() > std::time::Duration::from_secs(20);
-                let kb = self.ensure()?;
                 if fresh || due {
-                    let online = kb.online().unwrap_or(false);
+                    let (online, led_block) = {
+                        let kb = self.ensure()?;
+                        (kb.online().unwrap_or(false), kb.get_led_block().ok())
+                    };
                     let woke_up = !self.online && online;
                     self.online = online;
                     self.last_online = std::time::Instant::now();
@@ -335,6 +335,16 @@ impl Worker {
                     if woke_up && !fresh && !self.core.live.lock().unwrap().streaming() {
                         let pr = Profile::active();
                         let _ = self.apply_profile(&pr);
+                    } else if online && !self.core.live.lock().unwrap().streaming() {
+                        // Check if keyboard mode has drifted or reset from active profile (e.g. after sleep/power-cycle)
+                        if let Some(b) = led_block {
+                            let pr = Profile::active();
+                            let mode_mismatch = b[10] != pr.mode;
+                            let custom_mismatch = pr.mode == p::CUSTOM_MODE && b[9] == 0;
+                            if mode_mismatch || custom_mismatch {
+                                let _ = self.apply_profile(&pr);
+                            }
+                        }
                     }
                 }
                 None
@@ -375,10 +385,8 @@ impl Worker {
                 self.ensure()?.set_keymap(layer, &km)?;
                 self.keymaps.insert(layer, km);
                 self.send_keymap(layer);
-                if self.ensure()?.link == Link::Wired {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    let _ = self.ensure()?.commit();
-                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = self.ensure()?.commit();
                 Some(format!("Key remapped to {}", p::describe_code(code)))
             }
             Job::RestoreKeymap(layer) => {
@@ -387,10 +395,8 @@ impl Worker {
                 self.ensure()?.set_keymap(layer, &b)?;
                 self.keymaps.insert(layer, b);
                 self.send_keymap(layer);
-                if self.ensure()?.link == Link::Wired {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    let _ = self.ensure()?.commit();
-                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = self.ensure()?.commit();
                 Some("Default key layout restored".into())
             }
             Job::Macros { buf, assign, clear } => {

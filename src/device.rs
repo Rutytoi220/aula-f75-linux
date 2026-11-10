@@ -299,19 +299,44 @@ impl F75 {
     }
 
     pub fn set_effect(&mut self, mode: u8, brightness: u8, speed: u8, colour: u8) -> Result<()> {
-        self.edit_block(|b| p::edit_led_block(b, mode, brightness, speed, colour))
+        self.edit_block(|b| p::edit_led_block(b, mode, brightness, speed, colour))?;
+        sleep(Duration::from_millis(30));
+        self.commit()
     }
 
     /// Seconds from protocol::SLEEP (0 = never).
     pub fn set_sleep(&mut self, seconds: u16) -> Result<()> {
         let hw = p::SLEEP.iter().find(|s| s.0 == seconds).map(|s| s.1).unwrap_or(2);
-        self.edit_block(|b| b[p::SLEEP_OFFSET] = hw)
+        self.edit_block(|b| b[p::SLEEP_OFFSET] = hw)?;
+        sleep(Duration::from_millis(30));
+        self.commit()
     }
 
     pub fn set_per_key(&mut self, colours: &[[u8; 3]; p::LED_COUNT], brightness: u8) -> Result<()> {
         let m = self.cmds.led_matrix;
         self.write(m, 0, &p::matrix_payload(colours), 15)?;
+        sleep(Duration::from_millis(30));
         self.set_effect(p::CUSTOM_MODE, brightness, 0, 0)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_per_key(&mut self) -> Result<Vec<u8>> {
+        let m = self.cmds.led_matrix;
+        self.read(m, 0, p::PER_KEY_LEN)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_palette(&mut self) -> Result<Vec<u8>> {
+        let pal = self.cmds.palette;
+        self.read(pal, 0, p::PALETTE_LEN)
+    }
+
+    #[allow(dead_code)]
+    pub fn set_palette(&mut self, data: &[u8]) -> Result<()> {
+        let pal = self.cmds.palette;
+        self.write(pal, 0, data, 15)?;
+        sleep(Duration::from_millis(30));
+        self.commit()
     }
 
     /// Live frame, not acknowledged. Vendor pacing: 10 ms per packet on 2.4G (0x00487330), 7 ms wired (0x0048c6e0).

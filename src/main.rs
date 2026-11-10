@@ -73,10 +73,8 @@ fn apply_profile_standalone(kb: &mut F75, pr: &state::Profile) -> Result<()> {
         }
     }
     // Commit staged keymaps and lighting into physical EEPROM on hardware
-    if kb.link == Link::Wired {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let _ = kb.commit();
-    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let _ = kb.commit();
     Ok(())
 }
 

@@ -10,6 +10,9 @@ pub const LED_COUNT: usize = 126; // 21 columns x 6 rows; led = column * 6 + row
 pub const MATRIX_LEN: usize = 128; // KB.ini MatrixLen
 pub const LED_BLOCK_LEN: usize = 128;
 pub const KEYMAP_LEN: usize = MATRIX_LEN * 4;
+pub const PER_KEY_LEN: usize = LED_COUNT * 3; // 378 bytes: 126 red, 126 green, 126 blue (0x17a bytes)
+#[allow(dead_code)]
+pub const PALETTE_LEN: usize = 512;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Link {
@@ -39,13 +42,15 @@ pub struct Cmds {
     pub macros: u8,
     pub led: u8,
     pub realtime: u8,
+    #[allow(dead_code)]
+    pub palette: u8,
     pub read_flag: u8,
 }
 
 pub const WIRELESS: Cmds =
-    Cmds { keymap: 0x01, led_matrix: 0x02, macros: 0x03, led: 0x04, realtime: 0x88, read_flag: 0x40 };
+    Cmds { keymap: 0x01, led_matrix: 0x02, macros: 0x03, led: 0x04, realtime: 0x88, palette: 0x09, read_flag: 0x40 };
 pub const WIRED: Cmds =
-    Cmds { keymap: 0x03, led_matrix: 0x06, macros: 0x05, led: 0x04, realtime: 0x08, read_flag: 0x80 };
+    Cmds { keymap: 0x03, led_matrix: 0x06, macros: 0x05, led: 0x04, realtime: 0x08, palette: 0x0a, read_flag: 0x80 };
 pub const WIRELESS_ONLINE: u8 = 0x07; // returns m_bOnline (1 = keyboard linked to receiver), not battery
 
 pub fn cmds(link: Link) -> Cmds {
@@ -187,6 +192,9 @@ pub fn led_block_valid(b: &[u8]) -> bool {
 pub fn edit_led_block(b: &mut [u8], mode: u8, brightness: u8, speed: u8, colour: u8) {
     b[9] = (mode == CUSTOM_MODE) as u8;
     b[10] = mode;
+    if mode == CUSTOM_MODE {
+        b[11] = 0x20; // StartGp selector for custom per-key bank (group 0)
+    }
     if let Some(slot) = EFFECTS.iter().position(|e| e.0 == mode) {
         let o = 0x3a + slot * 2;
         b[o] = brightness.min(9);
@@ -201,9 +209,9 @@ pub fn effect_from_block(b: &[u8]) -> Option<(usize, u8, u8, u8)> {
     Some((i, b[o].min(9), (b[o + 1] >> 4).min(4), b[o + 1] & 0x0f))
 }
 
-/// Per-key planes for led_matrix: R[126] G[126] B[126] + padding to 384 (0x0048dbc0).
+/// Per-key planes for led_matrix: R[126] G[126] B[126] (378 bytes total, 0x0049c020 / 0x17a).
 pub fn matrix_payload(c: &[[u8; 3]; LED_COUNT]) -> Vec<u8> {
-    let mut buf = vec![0u8; MATRIX_LEN * 3];
+    let mut buf = vec![0u8; PER_KEY_LEN];
     for (led, px) in c.iter().enumerate() {
         for ch in 0..3 {
             buf[ch * LED_COUNT + led] = px[ch];
@@ -366,11 +374,10 @@ mod tests {
     }
 
     #[test]
-    fn matrix_write_is_28_packets() {
-        let pk = write_packets(WIRELESS.led_matrix, 0, &[0u8; MATRIX_LEN * 3]);
-        assert_eq!(pk.len(), 28);
-        assert!(pk[..27].iter().all(|p| p[2] == 28 && p[4] == 14));
-        assert_eq!((pk[27][3], pk[27][4]), (27, 6));
+    fn matrix_write_is_27_packets() {
+        let pk = write_packets(WIRELESS.led_matrix, 0, &[0u8; PER_KEY_LEN]);
+        assert_eq!(pk.len(), 27);
+        assert!(pk.iter().all(|p| p[2] == 27 && p[4] == 14));
         assert!(pk.iter().all(|p| p[19] == checksum(p)));
     }
 
