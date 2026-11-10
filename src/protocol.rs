@@ -194,6 +194,7 @@ pub fn edit_led_block(b: &mut [u8], mode: u8, brightness: u8, speed: u8, colour:
     }
 }
 
+#[allow(dead_code)]
 pub fn effect_from_block(b: &[u8]) -> Option<(usize, u8, u8, u8)> {
     let i = EFFECTS.iter().position(|e| e.0 == b[10])?;
     let o = 0x3a + i * 2;

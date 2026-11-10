@@ -290,6 +290,14 @@ impl F75 {
         self.write(led, 0, &b, 15)
     }
 
+    /// Commits active settings to physical EEPROM by re-writing the validated config block (cmd 0x04).
+    /// Official OemDrv commits cmd 0x04 after keymap/palette changes to trigger the firmware flash routine.
+    pub fn commit(&mut self) -> Result<()> {
+        let b = self.get_led_block()?;
+        let led = self.cmds.led;
+        self.write(led, 0, &b, 20)
+    }
+
     pub fn set_effect(&mut self, mode: u8, brightness: u8, speed: u8, colour: u8) -> Result<()> {
         self.edit_block(|b| p::edit_led_block(b, mode, brightness, speed, colour))
     }

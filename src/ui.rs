@@ -272,13 +272,6 @@ impl App {
                     }
                     self.online = o;
                 }
-                Event::Block { mode, brightness, speed, colour, sleep } => {
-                    self.mode = mode;
-                    self.s.brightness = brightness;
-                    self.s.speed = speed;
-                    self.s.colour = colour;
-                    self.s.sleep = sleep;
-                }
                 Event::Keymap { layer, codes, backup } => {
                     // the profile keeps its own layout (macro keys are re-derived from its macros)
                     let mut own: Vec<u8> = codes.iter().flatten().copied().collect();
@@ -1250,18 +1243,20 @@ pub fn preset_rainbow(c: &mut Colours) {
     }
 }
 
-pub fn run() -> anyhow::Result<()> {
-    if crate::instance::signal("show") {
-        return Ok(()); // already running: it brings its window up
+pub fn run(hidden: bool) -> anyhow::Result<()> {
+    if crate::instance::signal(if hidden { "ping" } else { "show" }) {
+        return Ok(()); // already running: it brings its window up or acknowledges ping
     }
     let core = Core::start(&Profile::active());
     crate::instance::listen(core.clone());
     let tray = crate::tray::spawn(core.clone());
-    loop {
+    if !hidden {
         window(core.clone())?;
-        // closed: stay in the background if there is a tray to come back from
-        // (or a live effect running - launching the app again reopens the window)
-        let background = tray || core.live.lock().unwrap().streaming();
+    }
+    loop {
+        // closed: stay in the background if launched with --hidden or there is a tray
+        // to come back from (or a live effect running - launching the app again reopens the window)
+        let background = hidden || tray || core.live.lock().unwrap().streaming();
         if core.quit.load(Ordering::SeqCst) || !background {
             break;
         }
@@ -1269,6 +1264,7 @@ pub fn run() -> anyhow::Result<()> {
         if core.quit.load(Ordering::SeqCst) {
             break;
         }
+        window(core.clone())?;
     }
     core.stop_live();
     core.flush(Duration::from_secs(3));

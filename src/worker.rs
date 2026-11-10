@@ -189,7 +189,6 @@ pub enum Event {
     Connected(Link),
     Lost(String),
     Online(bool),
-    Block { mode: usize, brightness: u8, speed: u8, colour: u8, sleep: u16 },
     Keymap { layer: u8, codes: Vec<[u8; 4]>, backup: Vec<[u8; 4]> },
     Done(String),
     Error(String),
@@ -199,6 +198,7 @@ struct Worker {
     core: Arc<Core>,
     last_online: std::time::Instant,
     kb: Option<F75>,
+    online: bool,
     keymaps: HashMap<u8, Vec<u8>>,
     backups: HashMap<u8, Vec<u8>>,
     tx: Sender<Event>,
@@ -225,21 +225,16 @@ impl Worker {
             self.keymaps.clear();
             self.backups.clear();
             self.held = false;
-            // while streaming, the stored brightness is the held 9, not the user's setting
-            let streaming = self.core.live.lock().unwrap().streaming();
-            if let Ok(online) = kb.online() {
-                let _ = self.tx.send(Event::Online(online));
-                if online && !kb.dry() && !streaming {
-                    if let Ok(b) = kb.get_led_block() {
-                        if let Some((mode, brightness, speed, colour)) = p::effect_from_block(&b) {
-                            let hw = b[p::SLEEP_OFFSET];
-                            let sleep = p::SLEEP.iter().find(|s| s.1 == hw).map(|s| s.0).unwrap_or(300);
-                            let _ = self.tx.send(Event::Block { mode, brightness, speed, colour, sleep });
-                        }
-                    }
-                }
-            }
+            let online = kb.online().unwrap_or(true);
+            self.online = online;
+            let _ = self.tx.send(Event::Online(online));
             self.kb = Some(kb);
+
+            // Re-apply active profile to keyboard on connect so hardware matches software state
+            if online && !self.core.live.lock().unwrap().streaming() {
+                let pr = Profile::active();
+                let _ = self.apply_profile(&pr);
+            }
         }
         Ok(self.kb.as_mut().unwrap())
     }
@@ -269,6 +264,48 @@ impl Worker {
         Ok(())
     }
 
+    pub fn apply_profile(&mut self, pr: &Profile) -> anyhow::Result<()> {
+        self.held = false;
+        {
+            let kb = self.ensure()?;
+            if pr.mode == p::CUSTOM_MODE {
+                kb.set_per_key(&pr.colours, pr.brightness)?;
+            } else {
+                kb.set_effect(pr.mode, pr.brightness, pr.speed, pr.colour)?;
+            }
+            kb.set_sleep(pr.sleep)?;
+        }
+        // key layouts (missing = factory) + macros; skipped if the layout read looks wrong.
+        // Macros only take over the cable: on 2.4G the macro keys are left as they are.
+        let wired = self.ensure()?.link == Link::Wired;
+        if self.guard().is_ok() {
+            for layer in 0..2u8 {
+                self.keymap(layer)?;
+                let mut want = pr.keymaps[layer as usize].clone().unwrap_or_else(|| self.backups[&layer].clone());
+                if layer == 0 {
+                    for (i, m) in pr.macros.iter().enumerate() {
+                        let o = m.led as usize * 4;
+                        let code = if wired { macros::key_code(i as u8, 1) } else { self.keymaps[&0][o..o + 4].try_into().unwrap() };
+                        want[o..o + 4].copy_from_slice(&code);
+                    }
+                }
+                if self.keymaps[&layer] != want {
+                    self.ensure()?.set_keymap(layer, &want)?;
+                    self.keymaps.insert(layer, want);
+                }
+                self.send_keymap(layer);
+            }
+            if wired {
+                if !pr.macros.is_empty() {
+                    self.ensure()?.set_macros(&macro_buffer(&pr.macros))?;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = self.ensure()?.commit();
+            }
+        }
+        Ok(())
+    }
+
     fn run(&mut self, job: Job) -> anyhow::Result<Option<String>> {
         Ok(match job {
             Job::Poll => {
@@ -280,6 +317,7 @@ impl Worker {
                     let best = present.first().map(|(l, _)| *l);
                     if !still_here || best != Some(kb.link) {
                         self.kb = None;
+                        self.online = false;
                         *self.core.link.lock().unwrap() = None;
                         let _ = self.tx.send(Event::Lost(if still_here { "switching connection…".into() } else { "keyboard disconnected".into() }));
                     }
@@ -289,9 +327,15 @@ impl Worker {
                 let due = self.last_online.elapsed() > std::time::Duration::from_secs(20);
                 let kb = self.ensure()?;
                 if fresh || due {
-                    let online = kb.online()?;
+                    let online = kb.online().unwrap_or(false);
+                    let woke_up = !self.online && online;
+                    self.online = online;
                     self.last_online = std::time::Instant::now();
                     let _ = self.tx.send(Event::Online(online));
+                    if woke_up && !fresh && !self.core.live.lock().unwrap().streaming() {
+                        let pr = Profile::active();
+                        let _ = self.apply_profile(&pr);
+                    }
                 }
                 None
             }
@@ -331,6 +375,10 @@ impl Worker {
                 self.ensure()?.set_keymap(layer, &km)?;
                 self.keymaps.insert(layer, km);
                 self.send_keymap(layer);
+                if self.ensure()?.link == Link::Wired {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let _ = self.ensure()?.commit();
+                }
                 Some(format!("Key remapped to {}", p::describe_code(code)))
             }
             Job::RestoreKeymap(layer) => {
@@ -339,6 +387,10 @@ impl Worker {
                 self.ensure()?.set_keymap(layer, &b)?;
                 self.keymaps.insert(layer, b);
                 self.send_keymap(layer);
+                if self.ensure()?.link == Link::Wired {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let _ = self.ensure()?.commit();
+                }
                 Some("Default key layout restored".into())
             }
             Job::Macros { buf, assign, clear } => {
@@ -372,40 +424,7 @@ impl Worker {
                 None
             }
             Job::ApplyProfile(pr) => {
-                self.held = false;
-                {
-                    let kb = self.ensure()?;
-                    if pr.mode == p::CUSTOM_MODE {
-                        kb.set_per_key(&pr.colours, pr.brightness)?;
-                    } else {
-                        kb.set_effect(pr.mode, pr.brightness, pr.speed, pr.colour)?;
-                    }
-                    kb.set_sleep(pr.sleep)?;
-                }
-                // key layouts (missing = factory) + macros; skipped if the layout read looks wrong.
-                // Macros only take over the cable: on 2.4G the macro keys are left as they are.
-                let wired = self.ensure()?.link == Link::Wired;
-                if self.guard().is_ok() {
-                    for layer in 0..2u8 {
-                        self.keymap(layer)?;
-                        let mut want = pr.keymaps[layer as usize].clone().unwrap_or_else(|| self.backups[&layer].clone());
-                        if layer == 0 {
-                            for (i, m) in pr.macros.iter().enumerate() {
-                                let o = m.led as usize * 4;
-                                let code = if wired { macros::key_code(i as u8, 1) } else { self.keymaps[&0][o..o + 4].try_into().unwrap() };
-                                want[o..o + 4].copy_from_slice(&code);
-                            }
-                        }
-                        if self.keymaps[&layer] != want {
-                            self.ensure()?.set_keymap(layer, &want)?;
-                            self.keymaps.insert(layer, want);
-                        }
-                        self.send_keymap(layer);
-                    }
-                    if wired && !pr.macros.is_empty() {
-                        self.ensure()?.set_macros(&macro_buffer(&pr.macros))?;
-                    }
-                }
+                self.apply_profile(&pr)?;
                 Some(format!("Profile \"{}\" applied", pr.name))
             }
         })
@@ -462,6 +481,7 @@ fn worker(rx: Receiver<Job>, tx: Sender<Event>, core: Arc<Core>) {
         core: core.clone(),
         last_online: Instant::now(),
         kb: None,
+        online: false,
         keymaps: HashMap::new(),
         backups: HashMap::new(),
         tx: tx.clone(),

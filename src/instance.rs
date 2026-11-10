@@ -26,10 +26,21 @@ pub fn listen(core: Arc<Core>) {
         for mut s in l.incoming().flatten() {
             let mut msg = String::new();
             let _ = s.read_to_string(&mut msg);
-            match msg.trim() {
-                "quit" => core.request_quit(),
-                "ping" => {}
-                _ => core.request_show(),
+            let msg = msg.trim();
+            if msg == "quit" {
+                core.request_quit();
+            } else if msg == "ping" {
+            } else if let Some(name) = msg.strip_prefix("apply:") {
+                let pr = if name.is_empty() {
+                    crate::state::Profile::active()
+                } else {
+                    crate::state::Profile::load(name).unwrap_or_else(crate::state::Profile::active)
+                };
+                core.send(crate::worker::Job::ApplyProfile(Box::new(pr)));
+            } else if msg == "apply" {
+                core.send(crate::worker::Job::ApplyProfile(Box::new(crate::state::Profile::active())));
+            } else {
+                core.request_show();
             }
         }
     });

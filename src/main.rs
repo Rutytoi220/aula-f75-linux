@@ -19,6 +19,8 @@ use device::F75;
 use protocol::Link;
 
 const USAGE: &str = "f75-studio                         open the app
+f75-studio --hidden                run in the background / tray (e.g. for autostart)
+f75-studio apply [PROFILE]         apply active (or named) profile to the keyboard
 f75-studio probe                   read only: link, online state, LED block
 f75-studio keymap [LAYER]          read only: dump key assignments (0 = base, 1 = Fn)
 f75-studio solid R G B             every key one colour (writes)
@@ -41,16 +43,69 @@ fn hue(h: f32) -> [u8; 3] {
     [f(5.0), f(3.0), f(1.0)]
 }
 
+fn apply_profile_standalone(kb: &mut F75, pr: &state::Profile) -> Result<()> {
+    if pr.mode == protocol::CUSTOM_MODE {
+        kb.set_per_key(&pr.colours, pr.brightness)?;
+    } else {
+        kb.set_effect(pr.mode, pr.brightness, pr.speed, pr.colour)?;
+    }
+    kb.set_sleep(pr.sleep)?;
+    if let Ok(layer0) = kb.get_keymap(0) {
+        let backup0 = state::keymap_backup(0, &layer0);
+        if protocol::keymap_encoding_ok(&backup0) {
+            for layer in 0..2u8 {
+                let km = if layer == 0 { layer0.clone() } else { kb.get_keymap(layer)? };
+                let backup = state::keymap_backup(layer, &km);
+                let mut want = pr.keymaps[layer as usize].clone().unwrap_or(backup);
+                if layer == 0 && kb.link == Link::Wired {
+                    for (i, m) in pr.macros.iter().enumerate() {
+                        let o = m.led as usize * 4;
+                        want[o..o + 4].copy_from_slice(&macros::key_code(i as u8, 1));
+                    }
+                }
+                if km != want {
+                    kb.set_keymap(layer, &want)?;
+                }
+            }
+            if kb.link == Link::Wired && !pr.macros.is_empty() {
+                kb.set_macros(&worker::macro_buffer(&pr.macros))?;
+            }
+        }
+    }
+    // Commit staged keymaps and lighting into physical EEPROM on hardware
+    if kb.link == Link::Wired {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = kb.commit();
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let dry = args.iter().any(|a| a == "--dry-run");
     let wired = args.iter().any(|a| a == "--wired");
-    args.retain(|a| a != "--dry-run" && a != "--wired");
-    if args.is_empty() {
-        return ui::run();
+    let hidden = args.iter().any(|a| a == "--hidden" || a == "--background" || a == "--tray");
+    args.retain(|a| a != "--dry-run" && a != "--wired" && a != "--hidden" && a != "--background" && a != "--tray");
+    if args.is_empty() || hidden {
+        return ui::run(hidden);
     }
     if args[0] == "quit" {
         println!("{}", if instance::signal("quit") { "F75 Studio stopped" } else { "F75 Studio isn't running" });
+        return Ok(());
+    }
+    if args[0] == "apply" {
+        let name = args.get(1);
+        let pr = match name {
+            Some(n) => state::Profile::load(n).ok_or_else(|| anyhow::anyhow!("profile '{n}' not found"))?,
+            None => state::Profile::active(),
+        };
+        if instance::signal(&format!("apply:{}", pr.name)) {
+            println!("Applied profile \"{}\" via running F75 Studio", pr.name);
+            return Ok(());
+        }
+        let mut kb = if dry { F75::dry_run(if wired { Link::Wired } else { Link::Receiver }) } else { F75::open()? };
+        apply_profile_standalone(&mut kb, &pr)?;
+        println!("Applied profile \"{}\" to AULA F75 ({})", pr.name, kb.link.name());
         return Ok(());
     }
     if args[0] != "fix-permissions" && !dry && instance::signal("ping") {
