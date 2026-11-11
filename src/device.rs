@@ -313,8 +313,9 @@ impl F75 {
     }
 
     pub fn set_per_key(&mut self, colours: &[[u8; 3]; p::LED_COUNT], brightness: u8) -> Result<()> {
+        let dimmed = p::scale_colours(colours, brightness);
         let m = self.cmds.led_matrix;
-        self.write(m, 0, &p::matrix_payload(colours), 15)?;
+        self.write(m, 0, &p::matrix_payload(&dimmed), 15)?;
         sleep(Duration::from_millis(30));
         self.set_effect(p::CUSTOM_MODE, brightness, 0, 0)
     }

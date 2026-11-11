@@ -323,9 +323,9 @@ impl Worker {
                         let _ = self.tx.send(Event::Lost(if still_here { "switching connection…".into() } else { "keyboard disconnected".into() }));
                     }
                 }
-                // radio traffic can swallow key releases on 2.4G (auto-repeat), so ask rarely
+                // radio traffic can swallow key releases on 2.4G (auto-repeat), so ask rarely while online
                 let fresh = self.kb.is_none();
-                let due = self.last_online.elapsed() > std::time::Duration::from_secs(20);
+                let due = !self.online || self.last_online.elapsed() > std::time::Duration::from_secs(20);
                 if fresh || due {
                     let (online, led_block) = {
                         let kb = self.ensure()?;
@@ -337,12 +337,14 @@ impl Worker {
                     let _ = self.tx.send(Event::Online(online));
                     if (woke_up && !fresh) || (online && !self.core.live.lock().unwrap().streaming()) {
                         let pr = Profile::active();
-                        let mut needs_apply = false;
-                        if let Some(b) = led_block {
-                            let mode_mismatch = b[10] != pr.mode;
-                            let custom_mismatch = pr.mode == p::CUSTOM_MODE && b[9] == 0;
-                            if mode_mismatch || custom_mismatch {
-                                needs_apply = true;
+                        let mut needs_apply = woke_up;
+                        if !needs_apply {
+                            if let Some(b) = led_block {
+                                let mode_mismatch = b[10] != pr.mode;
+                                let custom_mismatch = pr.mode == p::CUSTOM_MODE && b[9] == 0;
+                                if mode_mismatch || custom_mismatch {
+                                    needs_apply = true;
+                                }
                             }
                         }
                         if !needs_apply {

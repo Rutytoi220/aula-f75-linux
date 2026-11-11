@@ -209,6 +209,19 @@ pub fn effect_from_block(b: &[u8]) -> Option<(usize, u8, u8, u8)> {
     Some((i, b[o].min(9), (b[o + 1] >> 4).min(4), b[o + 1] & 0x0f))
 }
 
+/// Scales RGB colours by brightness 0..=9 for custom per-key matrix.
+/// Mode 21 has no hardware brightness register, so RGB channels are scaled in software (like OemDrv).
+pub fn scale_colours(c: &[[u8; 3]; LED_COUNT], brightness: u8) -> [[u8; 3]; LED_COUNT] {
+    let b = brightness.min(9) as u32;
+    if b == 0 {
+        return [[0, 0, 0]; LED_COUNT];
+    }
+    if b == 9 {
+        return *c;
+    }
+    c.map(|p| p.map(|v| ((v as u32 * b + 4) / 9) as u8))
+}
+
 /// Per-key planes for led_matrix: R[126] G[126] B[126] (378 bytes total, 0x0049c020 / 0x17a).
 pub fn matrix_payload(c: &[[u8; 3]; LED_COUNT]) -> Vec<u8> {
     let mut buf = vec![0u8; PER_KEY_LEN];
@@ -391,6 +404,25 @@ mod tests {
         assert_eq!(&pk[1][..8], &[0x06, 0x06, 0x02, 0x00, 0x02, 0x01, 88, 0x00]);
         let r = wired_packets(WIRED.led | WIRED.read_flag, 0, 128, None);
         assert_eq!(&r[0][..8], &[0x06, 0x84, 0, 0, 1, 0, 128, 0]);
+    }
+
+    #[test]
+    fn scale_colours_levels() {
+        let mut c = [[0u8; 3]; LED_COUNT];
+        c[0] = [255, 255, 255];
+        c[1] = [180, 90, 0];
+        
+        let off = scale_colours(&c, 0);
+        assert_eq!(off[0], [0, 0, 0]);
+        assert_eq!(off[1], [0, 0, 0]);
+
+        let b1 = scale_colours(&c, 1);
+        assert_eq!(b1[0], [28, 28, 28]);
+        assert_eq!(b1[1], [20, 10, 0]);
+
+        let b9 = scale_colours(&c, 9);
+        assert_eq!(b9[0], [255, 255, 255]);
+        assert_eq!(b9[1], [180, 90, 0]);
     }
 
     #[test]
