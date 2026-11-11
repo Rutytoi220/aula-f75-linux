@@ -281,7 +281,8 @@ impl Worker {
         if self.guard().is_ok() {
             for layer in 0..2u8 {
                 let current_hw = self.ensure()?.get_keymap(layer)?;
-                let mut want = pr.keymaps[layer as usize].clone().unwrap_or_else(|| self.backups[&layer].clone());
+                let backup = self.backups.entry(layer).or_insert_with(|| state::keymap_backup(layer, &current_hw)).clone();
+                let mut want = pr.keymaps[layer as usize].clone().unwrap_or(backup);
                 if want.len() == p::KEYMAP_LEN {
                     want[508..512].copy_from_slice(&[0x00, 0x00, 0x5a, 0xa5]);
                 }
