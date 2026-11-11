@@ -280,19 +280,22 @@ impl Worker {
         let wired = self.ensure()?.link == Link::Wired;
         if self.guard().is_ok() {
             for layer in 0..2u8 {
-                self.keymap(layer)?;
+                let current_hw = self.ensure()?.get_keymap(layer)?;
                 let mut want = pr.keymaps[layer as usize].clone().unwrap_or_else(|| self.backups[&layer].clone());
+                if want.len() == p::KEYMAP_LEN {
+                    want[508..512].copy_from_slice(&[0x00, 0x00, 0x5a, 0xa5]);
+                }
                 if layer == 0 {
                     for (i, m) in pr.macros.iter().enumerate() {
                         let o = m.led as usize * 4;
-                        let code = if wired { macros::key_code(i as u8, 1) } else { self.keymaps[&0][o..o + 4].try_into().unwrap() };
+                        let code = if wired { macros::key_code(i as u8, 1) } else { current_hw[o..o + 4].try_into().unwrap() };
                         want[o..o + 4].copy_from_slice(&code);
                     }
                 }
-                if self.keymaps[&layer] != want {
+                if current_hw != want {
                     self.ensure()?.set_keymap(layer, &want)?;
-                    self.keymaps.insert(layer, want);
                 }
+                self.keymaps.insert(layer, want);
                 self.send_keymap(layer);
             }
             if wired && !pr.macros.is_empty() {
@@ -332,18 +335,28 @@ impl Worker {
                     self.online = online;
                     self.last_online = std::time::Instant::now();
                     let _ = self.tx.send(Event::Online(online));
-                    if woke_up && !fresh && !self.core.live.lock().unwrap().streaming() {
+                    if (woke_up && !fresh) || (online && !self.core.live.lock().unwrap().streaming()) {
                         let pr = Profile::active();
-                        let _ = self.apply_profile(&pr);
-                    } else if online && !self.core.live.lock().unwrap().streaming() {
-                        // Check if keyboard mode has drifted or reset from active profile (e.g. after sleep/power-cycle)
+                        let mut needs_apply = false;
                         if let Some(b) = led_block {
-                            let pr = Profile::active();
                             let mode_mismatch = b[10] != pr.mode;
                             let custom_mismatch = pr.mode == p::CUSTOM_MODE && b[9] == 0;
                             if mode_mismatch || custom_mismatch {
-                                let _ = self.apply_profile(&pr);
+                                needs_apply = true;
                             }
+                        }
+                        if !needs_apply {
+                            // Check if hardware keymap lost its remap (e.g. after keyboard power cycle)
+                            if let Ok(km) = self.ensure()?.get_keymap(0) {
+                                if let Some(want0) = &pr.keymaps[0] {
+                                    if &km[..508] != &want0[..508] {
+                                        needs_apply = true;
+                                    }
+                                }
+                            }
+                        }
+                        if needs_apply {
+                            let _ = self.apply_profile(&pr);
                         }
                     }
                 }

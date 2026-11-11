@@ -351,8 +351,17 @@ impl F75 {
     }
 
     pub fn set_keymap(&mut self, layer: u8, data: &[u8]) -> Result<()> {
+        let mut d = data.to_vec();
+        if d.len() == p::KEYMAP_LEN {
+            // Write mandatory signature 00 00 5a a5 at end of 512 bytes (slot 127).
+            // Official OemDrv FillMatrix writes A5 5A 00 00 little endian;
+            // firmware checks this marker before writing the keymap to physical EEPROM.
+            d[508..512].copy_from_slice(&[0x00, 0x00, 0x5a, 0xa5]);
+        }
         let k = self.cmds.keymap;
-        self.write(k, layer, data, 15)
+        self.write(k, layer, &d, 15)?;
+        sleep(Duration::from_millis(30));
+        self.commit()
     }
 
     /// Macro area (see macros.rs). 2.4G: 512-byte pages, sub = page, 100 ms apart (0x004868a0);

@@ -355,6 +355,7 @@ pub fn factory_layer0() -> Vec<u8> {
             km[k.led as usize * 4..k.led as usize * 4 + 4].copy_from_slice(&c);
         }
     }
+    km[508..512].copy_from_slice(&[0x00, 0x00, 0x5a, 0xa5]);
     km
 }
 
